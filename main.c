@@ -8,23 +8,18 @@
 #include <inttypes.h>
 #include <string.h>
 #include <stdlib.h>
-
 #include "lcd.h"
 #include "coil.h"
 #include "button.h"
-
 #include "MicroMenu.h"
 #include "MenuConfig.h"
-
 #include "mb.h"			//Модбас библиотеки
 #include "mbport.h"
 #include "mbutils.h"
-
 #include "OWIPolled.h"				//1 wire áèáëèîòåêè
 #include "OWIHighLevelFunctions.h"
 #include "OWIBitFunctions.h"
 #include "common_files/OWIcrc.h"
-
 #include "bcd.h" //Мат функции
 
 //прототипы функций
@@ -38,18 +33,30 @@ char * utoa_builtin_div(uint32_t value, char *buffer);
 void Termostat();
 
 #define AUTO_REG_FLAG ucRegCoilsBuf[0] & 0b01000000
+#define AUTO_REG_ON ucRegCoilsBuf[0]|=0b01000000 //
+#define AUTO_REG_OFF ucRegCoilsBuf[0]&=0b10111111
+
+
 #define ALL_TEN_OFF ucRegCoilsBuf[0]&=0b11110001
 #define TARGET_TEMP usHoldingBuf[6]
 #define CURRENT_TEMP usHoldingBuf[2]
 
-#define TEN1_ON ucRegCoilsBuf[0]|=0b00000010
-#define TEN2_ON ucRegCoilsBuf[0]|=0b00000100
-#define TEN3_ON ucRegCoilsBuf[0]|=0b00001000
+#define TEN0_ON ucRegCoilsBuf[0]|=0b00000001 //  насос
+#define TEN1_ON ucRegCoilsBuf[0]|=0b00000010 //
+#define TEN2_ON ucRegCoilsBuf[0]|=0b00000100 //
+#define TEN3_ON ucRegCoilsBuf[0]|=0b00001000 //
+#define TEN4_ON ucRegCoilsBuf[0]|=0b00010000 //	
+#define TEN5_ON ucRegCoilsBuf[0]|=0b00100000 // пускач
+
+#define TEN0_OFF ucRegCoilsBuf[0]&=0b11111110
 #define TEN1_OFF ucRegCoilsBuf[0]&=0b11111101
 #define TEN2_OFF ucRegCoilsBuf[0]&=0b11111011
 #define TEN3_OFF ucRegCoilsBuf[0]&=0b11110111
+#define TEN4_OFF ucRegCoilsBuf[0]&=0b11101111
+#define TEN5_OFF ucRegCoilsBuf[0]&=0b11011111
 
 #define REFRESH_TEMP_DELAY   60  //Переодичность опроса датчиков температуры
+#define REFRESH_DISPLAY_DRAW 250
 #define BUS OWI_PIN_3						//Пин шины 1 wire
 #define MAX_DEVICES       0x04				//Количество датчиков на шине
 //коды ошибок для функции чтения температуры
@@ -67,32 +74,22 @@ void Termostat();
 #define DS18B20_COPY_SCRATCHPAD          0x48
 #define DS18B20_RECALL_E                 0xb8
 #define DS18B20_READ_POWER_SUPPLY        0xb4
-
 // Пид регулирование
 #define TERMOSTAT_PERIOD usHoldingBuf[11] //период воздействия
-
 #define K_prop usHoldingBuf[9]  //Пропорциональный коэфициетнт
 #define K_integ usHoldingBuf[10]// Интегральный коэффициент
 #define PWM_intens usRegInputBuf[3]
 #define K_dif usHoldingBuf[13]
 #define VOZDEISTVIE usHoldingBuf[12]
-
 int i_imbalance=0;  //Интегрирование несоответствия
-
 unsigned int timer_termostat_step=0;  //Таймер термостата
 unsigned int timer_termostat_second_step=0;
 unsigned int timer_termostat_PWM=0;  //Таймер ШИМ термостата
-
 char thermostat_step_falg=1;    //флаг таймера  температуры
-
 int t_prev=2430;                   // Температура прошлого шага
-
-
-
 /*------------------------------Переменные 1 wire-------------------------------*/
 static USHORT temperature = 0;
 int usTempInputBuf[6][6];                  //Массивы буфера усреднения
-
 unsigned char searchFlag = SEARCH_SENSORS;
 unsigned char crcFlag = 0;
 unsigned char num = 0;      // Количество найденных датчиков
@@ -101,29 +98,19 @@ unsigned char index_of_read_ds=0; //индекс датчика
 //Объект структуры содержащий id найденных датчиков
 OWI_device allDevices[MAX_DEVICES];
 /*------------------------------------------------------------------------------*/
-
 //#define F_CPU 1600000UL
 //----------------------- Defines MODBUS ------------------------------------------
-
 #define F_CPU 16000000UL
-
 #define REG_DISCRETE_START      10               //Адрес в сети MODBUS
 #define REG_DISCRETE_SIZE       32                // Кол-во
-
 #define REG_COILS_START         100
 #define REG_COILS_SIZE          32
-
 #define REG_INPUT_START         500
 #define REG_INPUT_NREGS        64
-
 #define REG_HOLDING_START       1000
 #define REG_HOLDING_NREGS      64
-
 #define RTS_ENABLE							// Активация пина RST
-
-
 /* ----------------------- Static variables MODBUS---------------------------------*/
-
 static USHORT usRegInputBuf[REG_INPUT_NREGS];                  //Массивы переменных MODBUS
 static USHORT usHoldingBuf[REG_HOLDING_NREGS];
 static unsigned char ucRegCoilsBuf[REG_COILS_SIZE / 8];
@@ -131,12 +118,9 @@ static unsigned char ucRegDiscreteBuf[REG_DISCRETE_SIZE / 8];
 /*----------------------------------------------------------------------------------*/
 char step_tim=1;            //флаг таймера опроса температуры
 unsigned int timer_step=0;  //Таймер опроса температуры
-
-
-
 char delay_timer_flag=0;
 unsigned int timer_delay_ds=0;
-
+unsigned int timer_display=0;
 int temperature_first=0; //Температура первый датчик
 
 /*---------------MicroMenu--------------------------------*/
@@ -156,8 +140,6 @@ static void Generic_Write(const char* Text)
 }
 
 /*------------------------------------------------------------------------------*/
-
-
 
 /* инициализация портов,
 подключенных к жки */
@@ -200,6 +182,7 @@ int main(void)
 	/*----MicroMenu------ВРЕМЕННО */
 	Menu_SetGenericWriteCallback(Generic_Write);
 	Menu_Navigate(&Menu_1_1);
+	
 	lcd_menuText(0);
 	Menu_Navigate(MENU_NEXT);
 	lcd_menuText(0);
@@ -208,6 +191,7 @@ int main(void)
 	lcd_menuText(0);
 	Menu_Navigate(MENU_NEXT);
 	lcd_menuText(0);
+	
 	/*----MicroMenu------ВРЕМЕННО */
 	usHoldingBuf[7]=10;
 
@@ -215,14 +199,132 @@ int main(void)
 	K_integ=1;
 	K_prop=10;
 	K_dif=1;
-	TERMOSTAT_PERIOD = 1800;
+	TERMOSTAT_PERIOD = 2; //1800
+	AUTO_REG_ON;
+	
+unsigned int delay_frame = 30;
+unsigned int delay_frame_counter = 0;
+char delay_frame_flag=0;
 
 	/*----------------------*/
 	while(1)
 	{
-
 		SensorFound();//Поиск датчиков
 		temer_poll();//обdновление температуры
+		
+		
+		
+		if(timer_display>=REFRESH_DISPLAY_DRAW){
+			switch (button_poll())
+			{
+				case 1:
+			//	TEN0_ON;	
+			//	lcd_gotoxy(0,0);
+			//	lcd_putstring("button 1");
+			//	delay_frame_flag = 1;
+				break;
+				case 2:
+				TARGET_TEMP+=10;
+				delay_frame_flag = 1;
+				break;
+				case 3:
+				TARGET_TEMP-=10;
+				delay_frame_flag = 1;
+				break;
+				case 4:
+			//	TEN5_ON;
+			//	lcd_gotoxy(0,0);
+			//	lcd_putstring("button 4");
+			//	delay_frame_flag = 1;
+				break;
+				case 5:
+			//	TEN0_OFF;
+			//	TEN5_OFF;
+			//	lcd_gotoxy(0,0);
+			//	lcd_putstring("button 5");
+			//	delay_frame_flag = 1;
+				break;
+				default:
+				break;
+			}
+			//Временно--------------------//
+			if (!delay_frame_flag)
+			{
+				
+				lcd_clear();
+				lcd_gotoxy(0,0);
+				char buffer[5];
+				lcd_putstring("V:");
+				utoa(usHoldingBuf[0]/100,buffer,10);
+				lcd_putstring(buffer);
+				lcd_putstring(".");
+				utoa(usHoldingBuf[0]/10%10,buffer,10);
+				lcd_putstring(buffer);
+				lcd_putstring("C ");
+				lcd_putstring("O:");
+				utoa(usHoldingBuf[1]/100,buffer,10);
+				lcd_putstring(buffer);
+				lcd_putstring(".");
+				utoa(usHoldingBuf[1]/10%10,buffer,10);
+				lcd_putstring(buffer);
+				lcd_putstring("C ");
+				lcd_gotoxy(0,1);
+				lcd_putstring("D:");
+				utoa(usHoldingBuf[2]/100,buffer,10);
+				lcd_putstring(buffer);
+				lcd_putstring(".");
+				utoa(usHoldingBuf[2]/10%10,buffer,10);
+				lcd_putstring(buffer);
+				lcd_putstring("C ");
+				lcd_putstring("P:");
+				utoa(usHoldingBuf[3]/100,buffer,10);
+				lcd_putstring(buffer);
+				lcd_putstring(".");
+				utoa(usHoldingBuf[3]/10%10,buffer,10);
+				lcd_putstring(buffer);
+				lcd_putstring("C ");
+			}else
+			{
+				delay_frame_counter++;
+				if (delay_frame_counter>delay_frame)
+				{
+					delay_frame_counter=0;
+					delay_frame_flag = 0;
+				}
+				char buffer[5];
+				lcd_clear();
+				lcd_gotoxy(0,0);
+				lcd_putstring("Temp:");
+				utoa(TARGET_TEMP/100,buffer,10);
+				lcd_putstring(buffer);
+				lcd_putstring(".");
+				utoa(TARGET_TEMP/10%10,buffer,10);
+				lcd_putstring(buffer);
+				lcd_putstring("C ");
+				lcd_gotoxy(0,1);
+				lcd_putstring("D:");
+				utoa(CURRENT_TEMP/100,buffer,10);
+				lcd_putstring(buffer);
+				lcd_putstring(".");
+				utoa(CURRENT_TEMP/10%10,buffer,10);
+				lcd_putstring(buffer);
+				lcd_putstring("C ");
+				lcd_putstring("N");
+				utoa((TARGET_TEMP-CURRENT_TEMP)/100,buffer,10);
+				lcd_putstring(buffer);
+				lcd_putstring(".");
+				utoa((TARGET_TEMP-CURRENT_TEMP)/10%10,buffer,10);
+				lcd_putstring(buffer);
+				lcd_putstring("C ");
+				//TARGET_TEMP usHoldingBuf[6]
+				// CURRENT_TEMP usHoldingBuf[2]
+				
+			}
+			//--------------------------//
+			timer_display=0;
+		}
+		
+		
 		Termostat();// Регулировка температуры
 		update_coil_state(ucRegCoilsBuf);//Обновление состояний реле
 		(void) eMBPoll();// Основная функция mobbus
@@ -458,7 +560,12 @@ ISR(TIMER0_COMPA_vect)
 	{
 		timer_delay_ds++;
 	}
-
+	
+	
+	if(timer_display<=REFRESH_DISPLAY_DRAW)
+	{
+		timer_display++;
+	}
 
 	if (timer_termostat_step<1000)
 	{
@@ -550,40 +657,7 @@ void temer_poll()
 	{
 		if(get_temperature()&&(index_of_read_ds>=num))
 		{
-			//Временно--------------------//
-			lcd_clear();
-			lcd_gotoxy(0,0);
-			char buffer[5];
-			lcd_putstring("V:");
-			utoa(usHoldingBuf[0]/10,buffer,10);
-			lcd_putstring(buffer);
-			lcd_putstring(".");
-			utoa(usHoldingBuf[0]%10,buffer,10);
-			lcd_putstring(buffer);
-			lcd_putstring("C ");
-			lcd_putstring("O:");
-			utoa(usHoldingBuf[1]/10,buffer,10);
-			lcd_putstring(buffer);
-			lcd_putstring(".");
-			utoa(usHoldingBuf[1]%10,buffer,10);
-			lcd_putstring(buffer);
-			lcd_putstring("C ");
-			lcd_gotoxy(0,1);
-			lcd_putstring("D:");
-			utoa(usHoldingBuf[2]/10,buffer,10);
-			lcd_putstring(buffer);
-			lcd_putstring(".");
-			utoa(usHoldingBuf[2]%10,buffer,10);
-			lcd_putstring(buffer);
-			lcd_putstring("C ");
-			lcd_putstring("P:");
-			utoa(usHoldingBuf[3]/10,buffer,10);
-			lcd_putstring(buffer);
-			lcd_putstring(".");
-			utoa(usHoldingBuf[3]%10,buffer,10);
-			lcd_putstring(buffer);
-			lcd_putstring("C ");
-			//--------------------------//
+			
 			timer_step=0;
 		}
 		if(index_of_read_ds>=num) index_of_read_ds=0;
@@ -594,9 +668,7 @@ unsigned char* lcd_menuText(int8_t menuShift)
 {
 	int8_t i;
 	Menu_Item_t* tempMenu;
-
 	if ((void*)Menu_GetCurrentMenu == (void*)&NULL_MENU) return strNULL;
-
 	i = menuShift;
 	tempMenu = Menu_GetCurrentMenu();
 	if (i>0)
@@ -621,7 +693,6 @@ unsigned char* lcd_menuText(int8_t menuShift)
 			i++;
 		}
 	}
-
 	if ((void*)tempMenu == (void*)&NULL_MENU)
 	{
 		return strNULL;
@@ -629,20 +700,15 @@ unsigned char* lcd_menuText(int8_t menuShift)
 	else
 	{
 		char* str=tempMenu->Text;
-
 		//lcd_putstring(pgm_read_word(&str));
 		//strcpy_P(buff, pgm_read_word(&(TempMenu->Text)));
 		char c=0;
 		char i=0;
-
 		while((c = (const char*)pgm_read_byte(str++)))
 		{
 			lcd_putchar(c);
 			i++;
 		}
-
-
-
 		return i;
 	}
 }
@@ -663,16 +729,12 @@ char * utoa_builtin_div(uint32_t value, char *buffer)
 }
 
 void Termostat()
-
 {
-
-
 	if(AUTO_REG_FLAG) //Если разрешено авторегулирование
 	{
 		usRegInputBuf[4] = timer_termostat_step;//debug
-
-		if(timer_termostat_PWM<timer_termostat_second_step)TEN1_OFF; //По истечении таймера ШИМ вырубить тену №1
-
+		//if(timer_termostat_PWM<timer_termostat_second_step)TEN1_OFF; //По истечении таймера ШИМ вырубить тену №1
+		
 		if (timer_termostat_second_step>TERMOSTAT_PERIOD)
 		{
 			TEN1_OFF;
@@ -685,41 +747,44 @@ void Termostat()
 			int delta_t=0;
 			delta_t=t_prev-CURRENT_TEMP;
 			t_prev=CURRENT_TEMP;
-
 			i_imbalance=nevyzka+i_imbalance; //Суммирование интегральной части
-
 			usRegInputBuf[5]=K_prop*nevyzka;
 			usRegInputBuf[6]=i_imbalance/K_integ;
 			usRegInputBuf[7]=K_dif*delta_t;
 			usRegInputBuf[8]=nevyzka;
-
 			P = (K_prop*nevyzka+K_dif*delta_t+i_imbalance/K_integ);    //Вычисление воздействия на данном шаге
-
 			PWM_intens = P;
-
+			
+			if(TARGET_TEMP>CURRENT_TEMP){
+				P=1001;
+			}else{
+				P=-1;
+			}
+			
 			if (P>=1000)
 			{
 				timer_termostat_PWM=TERMOSTAT_PERIOD;
-				TEN1_ON;
-				TEN2_ON;
-				TEN3_ON;
+			TEN5_ON;
+			TEN0_OFF; //включаем насос		
+	        //TEN1_ON;
+			//	TEN2_ON;
+			//	TEN3_ON;
 			}
 
 			if (P<0)
 			{
-				TEN1_OFF;
-				TEN2_OFF;
-				TEN3_OFF;
+			TEN5_OFF;	
+			TEN0_ON; //выключаем насос	
+		    //TEN1_OFF;
+			//	TEN2_OFF;
+			//	TEN3_OFF;
+			
 			}
-			else{
+			/*else{
 				if (P<1000)                 //Если требуется регулирование
 				{
-
-
 					timer_termostat_PWM = (TERMOSTAT_PERIOD/10)*((P%333)*3)/100;
-
 					usRegInputBuf[2] = timer_termostat_PWM; //Debug
-
 					if (P>660)
 					{
 						TEN1_ON;
@@ -734,20 +799,15 @@ void Termostat()
 							TEN2_ON;
 							TEN3_OFF;
 						}
-
 						else
 						{
 							TEN1_ON;
 							TEN2_OFF;
 							TEN3_OFF;
 						}
-
 					}
 				}
-			}
-
+			}*/
 		}
-
-
 	}
 }

@@ -1,12 +1,6 @@
-#include <avr/io.h>
-#include <stdio.h>
-#define F_CPU 16000000UL
-#include <util/delay.h>
-#include "lcd.h"
-#include <string.h>
-#include "coil.h"
 
-
+#include "button.h"
+char PrevousButton=0;
 void ADC_Init()
 {
     ADCSRA |= (1 << ADEN) // Включаем АЦП
@@ -25,36 +19,36 @@ int button_poll()
     u = (ADCL|ADCH << 8); // Считываем  полученное значение
 
 
-    if(u>900)
+    if(u>900 && PrevousButton)
     {
-
-        return 0;
-
+		char res = PrevousButton;
+		PrevousButton =0;
+        return res;
     }
-    else if ((u<70))
+    else if ((u<120))
     {
-
-        return 1;
+PrevousButton =1; //right
+      
     }
     else if ((u<300))
     {
 
-        return 2;
+    PrevousButton =2;// up
     }
-    else if ((u<340))
+    else if ((u<380))
     {
 
-        return 3;
+      PrevousButton =3;// down
     }
-    else if ((u<600))
+    else if ((u<700))
     {
 
-        return 4;
+      PrevousButton =4;//left
     }
     else if ((u<900))
     {
 
-        return 5;
+       PrevousButton =5;//select
     }
     return 0;
 }
